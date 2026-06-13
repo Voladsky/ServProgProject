@@ -1,4 +1,4 @@
-// froglogic.js
+// froglogic.js – с подробным логированием для отладки
 
 class FrogGame {
     constructor() {
@@ -20,6 +20,10 @@ class FrogGame {
         this.availableTargets = new Set();
     }
 
+    log(...args) {
+        console.log('[FrogGame]', ...args);
+    }
+
     async connectAndJoin(name, gameIdInput) {
         this.playerName = name;
         this.connection = new signalR.HubConnectionBuilder()
@@ -32,6 +36,7 @@ class FrogGame {
 
         try {
             await this.connection.start();
+            this.log('SignalR connected');
         } catch (err) {
             this.setStatus('error', 'Connection failed: ' + err);
             showModal();
@@ -41,8 +46,11 @@ class FrogGame {
         try {
             if (!gameIdInput || gameIdInput.trim() === '') {
                 await this.connection.invoke('CreateGame');
+                this.log('CreateGame invoked');
             } else {
+                this.gameId = gameIdInput.trim(); 
                 await this.connection.invoke('JoinGame', gameIdInput.trim());
+                this.log('JoinGame invoked with id', gameIdInput);
             }
         } catch (err) {
             this.setStatus('error', err.message || 'Failed to create/join game');
@@ -75,6 +83,7 @@ class FrogGame {
             await this.connection.start();
             this.gameId = gid;
             this.playerToken = tok;
+            this.log('Reconnected, gameId:', gid, 'token:', tok);
             hideModal();
             return true;
         } catch (err) {
@@ -85,6 +94,7 @@ class FrogGame {
 
     registerHandlers() {
         this.connection.on('GameCreated', (gameId, playerToken) => {
+            this.log('GameCreated', gameId, playerToken);
             this.gameId = gameId;
             this.playerToken = playerToken;
             this.isPlayer1 = true;
@@ -93,17 +103,23 @@ class FrogGame {
         });
 
         this.connection.on('JoinedGame', (playerToken) => {
+            this.log('JoinedGame', playerToken);
             this.playerToken = playerToken;
             this.isPlayer1 = false;
+            if (!this.gameId) {
+                this.gameId = sessionStorage.getItem('fg_gameId');
+            }
             this.persistState();
         });
 
         this.connection.on('JoinFailed', (message) => {
+            this.log('JoinFailed', message);
             this.setStatus('error', message);
             showModal();
         });
 
         this.connection.on('GameStarted', (data) => {
+            this.log('GameStarted', data);
             this.currentTurnToken = data.currentTurn;
             this.board = data.board.cells ? data.board.cells : data.board;
             this.players[data.player1] = this.isPlayer1 ? this.playerName : 'Opponent';
@@ -113,20 +129,24 @@ class FrogGame {
             this.updateBoardView();
             this.updateGameStateAfterServerUpdate();
             this.persistState();
+            this.log('GameStarted: myToken=', this.playerToken, 'currentTurn=', this.currentTurnToken, 'isMyTurn=', this.currentTurnToken === this.playerToken);
         });
 
         this.connection.on('FrogRemoved', (row, col, playerToken) => {
+            this.log('FrogRemoved', row, col, playerToken);
             if (this.board[row] && this.board[row][col] !== undefined) {
                 this.board[row][col] = 0;
             }
             if (playerToken === this.playerToken) {
                 this.myRemoved = true;
             }
+            this.clearSelection();
             this.updateBoardView();
             this.updateGameStateAfterServerUpdate();
         });
 
         this.connection.on('MoveMade', (data) => {
+            this.log('MoveMade', data);
             this.board = data.board.cells ? data.board.cells : data.board;
             this.updateBoardView();
             this.clearSelection();
@@ -136,29 +156,35 @@ class FrogGame {
         });
 
         this.connection.on('TurnChanged', (currentTurnToken) => {
+            this.log('TurnChanged', currentTurnToken, 'myToken=', this.playerToken);
             this.currentTurnToken = currentTurnToken;
+            this.clearSelection();
             this.updateGameStateAfterServerUpdate();
         });
 
         this.connection.on('GameOver', (winnerToken, reason) => {
+            this.log('GameOver', winnerToken, reason);
             this.state = 'gameover';
             const winnerName = this.players[winnerToken] || 'Someone';
             this.setStatus('gameover', `${winnerName} wins! ${reason}`);
         });
 
         this.connection.on('PlayerDisconnected', (playerToken) => {
+            this.log('PlayerDisconnected', playerToken);
             if (playerToken !== this.playerToken) {
                 this.setStatus('their-turn', 'Opponent disconnected, waiting for reconnect...');
             }
         });
 
         this.connection.on('PlayerReconnected', (playerToken) => {
+            this.log('PlayerReconnected', playerToken);
             if (playerToken !== this.playerToken) {
                 this.setStatus(this.state === 'your-turn' ? 'your-turn' : 'their-turn', 'Opponent reconnected');
             }
         });
 
         this.connection.onclose(async () => {
+            this.log('Connection closed');
             this.setStatus('error', 'Disconnected. Trying to reconnect...');
         });
     }
@@ -174,6 +200,7 @@ class FrogGame {
     updateGameStateAfterServerUpdate() {
         if (this.state === 'gameover') return;
         const myTurn = (this.currentTurnToken === this.playerToken);
+        this.log('updateGameState: myTurn=', myTurn, 'currentTurnToken=', this.currentTurnToken, 'myToken=', this.playerToken);
         if (!myTurn) {
             this.state = 'their-turn';
             const oppName = this.isPlayer1
@@ -196,6 +223,7 @@ class FrogGame {
         }
         window.setRemoveButtonVisible(canRemove);
         this.clearSelection();
+        this.log('State set to', this.state);
     }
 
     hasAnyLegalMove() {
@@ -203,7 +231,8 @@ class FrogGame {
         for (let r = 0; r < 8; r++) {
             for (let c = 0; c < 8; c++) {
                 if (this.board[r] && this.board[r][c] === playerPiece) {
-                    if (getLegalJumps(this.board, r, c).length > 0) return true;
+                    const jumps = getLegalJumps(this.board, r, c);
+                    if (jumps.length > 0) return true;
                 }
             }
         }
@@ -211,12 +240,18 @@ class FrogGame {
     }
 
     handleCellClick(row, col) {
+        this.log('handleCellClick', row, col, 'state=', this.state, 'removeMode=', this.removeMode);
         if (this.state === 'gameover' || this.state === 'lobby' || this.state === 'waiting-join') return;
         if (row < 0 || row > 7 || col < 0 || col > 7) return;
 
         if (this.removeMode) {
+            this.log('Remove mode, sending RemoveFrog', row, col);
             this.connection.invoke('RemoveFrog', this.gameId, row, col)
-                .catch(err => this.setStatus('error', err.message));
+                .then(() => this.log('RemoveFrog success'))
+                .catch(err => {
+                    this.log('RemoveFrog error', err);
+                    this.setStatus('error', err.message);
+                });
             this.removeMode = false;
             window.setRemoveMode(false);
             return;
@@ -225,16 +260,19 @@ class FrogGame {
         if (this.state === 'your-turn') {
             if (!this.selectedSource) {
                 const piece = this.board[row][col];
+                this.log('No selected source, piece at', row, col, '=', piece, 'my piece =', this.isPlayer1 ? 1 : 2);
                 if (piece === (this.isPlayer1 ? 1 : 2)) {
                     this.selectedSource = { r: row, c: col };
                     this.jumpChain = [];
                     this.showAvailableTargets(row, col);
+                    this.log('Selected frog at', row, col);
                 }
                 return;
             }
 
             const targetKey = `${row},${col}`;
             if (this.availableTargets.has(targetKey)) {
+                this.log('Jump to', row, col);
                 this.jumpChain.push({ r: row, c: col });
                 const tempBoard = this.board.map(arr => [...arr]);
                 let curR = this.selectedSource.r, curC = this.selectedSource.c;
@@ -248,12 +286,15 @@ class FrogGame {
                 }
                 const nextJumps = getLegalJumps(tempBoard, curR, curC);
                 if (nextJumps.length === 0) {
+                    this.log('No more jumps, finishing move');
                     this.finishMove();
                 } else {
+                    this.log('More jumps possible, continuing chain');
                     this.selectedSource = { r: curR, c: curC };
                     this.showAvailableTargets(curR, curC);
                 }
             } else {
+                this.log('Invalid target, reselecting if own frog');
                 const piece = this.board[row][col];
                 if (piece === (this.isPlayer1 ? 1 : 2)) {
                     this.selectedSource = { r: row, c: col };
@@ -263,11 +304,14 @@ class FrogGame {
                     this.clearSelection();
                 }
             }
+        } else {
+            this.log('Click ignored – not your turn');
         }
     }
 
     showAvailableTargets(r, c) {
         const jumps = getLegalJumps(this.board, r, c);
+        this.log('Legal jumps from', r, c, ':', jumps);
         this.availableTargets = new Set(jumps.map(j => `${j.r},${j.c}`));
         window.highlightCells(jumps);
     }
@@ -282,9 +326,20 @@ class FrogGame {
     finishMove() {
         if (!this.selectedSource || this.jumpChain.length === 0) return;
         const start = this.selectedSource;
+        console.log('[DEBUG] Sending move:', {
+            gameId: this.gameId,
+            fromRow: start.r, fromCol: start.c,
+            jumpChain: this.jumpChain,
+            myToken: this.playerToken,
+            currentTurnToken: this.currentTurnToken,
+            state: this.state
+        });
         this.connection.invoke('MakeMove', this.gameId, start.r, start.c, this.jumpChain)
+            .then(() => console.log('[DEBUG] Move success'))
             .catch(err => {
-                this.setStatus('error', err.message);
+                console.error('[ERROR] MakeMove failed:', err);
+                // Дополнительно показываем текст ошибки от сервера
+                if (err.message) this.setStatus('error', `Server: ${err.message}`);
                 this.clearSelection();
                 this.updateGameStateAfterServerUpdate();
             });
@@ -292,8 +347,10 @@ class FrogGame {
     }
 
     passTurn() {
+        this.log('PassTurn invoked');
         if (this.state !== 'your-turn') return;
         this.connection.invoke('PassTurn', this.gameId).catch(err => {
+            this.log('Pass error', err);
             this.setStatus('error', err.message);
         });
     }
@@ -337,6 +394,7 @@ class FrogGame {
     }
 
     toggleRemoveMode() {
+        this.log('toggleRemoveMode, myFirstTurn=', this.myFirstTurn, 'myRemoved=', this.myRemoved);
         if (!this.myFirstTurn || this.myRemoved) return;
         this.removeMode = !this.removeMode;
         window.setRemoveMode(this.removeMode);
@@ -349,7 +407,7 @@ class FrogGame {
     }
 }
 
-// ─── Rules‑compliant jump detection (matches backend: white = inner 6x6) ───
+// ─── Rules‑compliant jump detection (inner 6×6 white) ───
 function getLegalJumps(board, r, c, simulatedBoard = null) {
     const currentBoard = simulatedBoard || board;
     const jumps = [];
@@ -366,12 +424,10 @@ function getLegalJumps(board, r, c, simulatedBoard = null) {
             if (currentBoard[midR][midC] === 0) continue;
             if (currentBoard[landR][landC] !== 0) continue;
 
-            // White squares: rows 1-6 and cols 1-6 (inner board)
             const isWhite = (landR >= 1 && landR <= 6 && landC >= 1 && landC <= 6);
             if (isWhite) {
                 jumps.push({ r: landR, c: landC, isSwamp: false });
             } else {
-                // Swamp jump – only legal if there is at least one further jump
                 const tempBoard = copyBoard(currentBoard);
                 tempBoard[midR][midC] = 0;
                 tempBoard[landR][landC] = tempBoard[r][c];
@@ -390,13 +446,9 @@ function copyBoard(board) {
     return board.map(row => [...row]);
 }
 
-// ─── Global helpers ──────────────────────────────────────────
-function showModal() {
-    document.getElementById('joinModalBackdrop').style.display = 'flex';
-}
-function hideModal() {
-    document.getElementById('joinModalBackdrop').style.display = 'none';
-}
+// ─── Global helpers ───
+function showModal() { document.getElementById('joinModalBackdrop').style.display = 'flex'; }
+function hideModal() { document.getElementById('joinModalBackdrop').style.display = 'none'; }
 
 function updateStatus({ state = '', turn = '', players = [], msg = '', passEnabled = false } = {}) {
     const panel = document.querySelector('.status-panel');
@@ -450,5 +502,4 @@ window.copyGameId = function () {
     });
 };
 
-// Initialize game
 window.frogGame = new FrogGame();

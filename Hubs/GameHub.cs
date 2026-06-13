@@ -4,16 +4,13 @@ using ServProgProject.Services;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace ServProgProject.Hubs
 {
-    // Hubs/GameHub.cs
     public class GameHub : Hub
     {
         private readonly GameManager _manager;
-        // Map connection -> player token to avoid sending token on each call
         private static readonly ConcurrentDictionary<string, string> _connToToken = new();
 
         public GameHub(GameManager manager) => _manager = manager;
@@ -22,7 +19,6 @@ namespace ServProgProject.Hubs
         {
             var (gameId, playerToken) = await _manager.CreateGame();
             await Groups.AddToGroupAsync(Context.ConnectionId, gameId.ToString());
-            // store connection
             var game = _manager.GetGame(gameId);
             game.Player1Connection = Context.ConnectionId;
             _connToToken[Context.ConnectionId] = playerToken;
@@ -36,6 +32,7 @@ namespace ServProgProject.Hubs
                 await Clients.Caller.SendAsync("JoinFailed", "Invalid game id");
                 return;
             }
+
             string playerToken;
             try
             {
@@ -46,16 +43,26 @@ namespace ServProgProject.Hubs
                 await Clients.Caller.SendAsync("JoinFailed", ex.Message);
                 return;
             }
+
             await Groups.AddToGroupAsync(Context.ConnectionId, gameId.ToString());
             var game = _manager.GetGame(gameId);
             game.Player2Connection = Context.ConnectionId;
             _connToToken[Context.ConnectionId] = playerToken;
-            // Send initial full board state to both players now that board is generated in JoinGame
-            await Clients.Group(gameId.ToString()).SendAsync("GameStarted", new { board = game.Board, currentTurn = game.CurrentTurn, player1 = game.Player1Id, player2 = game.Player2Id, player1Removed = game.Player1Removed, player2Removed = game.Player2Removed });
+
+            // Send the full board state to BOTH players
+            await Clients.Group(gameId.ToString()).SendAsync("GameStarted", new
+            {
+                board = game.Board,
+                currentTurn = game.CurrentTurn,
+                player1 = game.Player1Id,
+                player2 = game.Player2Id,
+                player1Removed = game.Player1Removed,
+                player2Removed = game.Player2Removed
+            });
+
             await Clients.Caller.SendAsync("JoinedGame", playerToken);
         }
 
-        // Reconnect via OnConnectedAsync query parameters
         public override async Task OnConnectedAsync()
         {
             var httpCtx = Context.GetHttpContext();
@@ -82,7 +89,8 @@ namespace ServProgProject.Hubs
 
         public async Task RemoveFrog(Guid gameId, int row, int col)
         {
-            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token)) throw new InvalidOperationException("Not authenticated in this game");
+            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token))
+                throw new InvalidOperationException("Not authenticated in this game");
             await _manager.RemoveFrog(gameId, token, row, col);
         }
 
@@ -91,14 +99,14 @@ namespace ServProgProject.Hubs
             if (!_connToToken.TryGetValue(Context.ConnectionId, out var token))
                 throw new InvalidOperationException("Not authenticated in this game");
 
-            // Convert to tuple list expected by GameManager
             var tuples = destinations.Select(d => (d.Row, d.Col)).ToList();
             await _manager.MakeMove(gameId, token, startRow, startCol, tuples);
         }
 
         public async Task PassTurn(Guid gameId)
         {
-            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token)) throw new InvalidOperationException("Not authenticated in this game");
+            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token))
+                throw new InvalidOperationException("Not authenticated in this game");
             await _manager.PassTurn(gameId, token);
         }
     }
