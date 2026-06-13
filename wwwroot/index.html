@@ -1,0 +1,125 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Frog Chess - Test Client</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/7.0.5/signalr.min.js"></script>
+  <style>
+    :root{--cell:56px}
+    body{font-family:Arial,Helvetica,sans-serif;margin:12px;background:#f0f3f5}
+    header{display:flex;align-items:center;gap:12px}
+    .btn{padding:8px 12px;border-radius:6px;border:1px solid #888;background:#fff;cursor:pointer}
+    .btn:disabled{opacity:0.5}
+    #boardWrap{display:flex;gap:18px;margin-top:12px}
+    #board{display:grid;grid-template-columns:repeat(8,var(--cell));gap:4px;padding:6px;background:#333;border-radius:8px}
+    .cell{width:var(--cell);height:var(--cell);display:flex;align-items:center;justify-content:center;font-size:22px;user-select:none;cursor:pointer}
+    .white{background:#fff;box-shadow:inset 0 0 0 1px #ddd}
+    .green{background:#78b24a;box-shadow:inset 0 0 0 1px rgba(0,0,0,0.12)}
+    .frog1{color:#0b66ff}
+    .frog2{color:#d33}
+    .selected{outline:4px solid gold}
+    .dest{outline:4px solid orange}
+    #infoPanel{width:320px}
+    #log{height:280px;overflow:auto;border:1px solid #ccc;padding:8px;background:#fff}
+    .meta{font-size:13px;color:#222}
+  </style>
+</head>
+<body>
+  <header>
+    <h2 style="margin:0">Frog Chess</h2>
+    <div>
+      <button id="create" class="btn">Create Game</button>
+      <input id="gameId" placeholder="Game ID" style="width:240px;padding:6px;margin-left:8px"/>
+      <button id="join" class="btn">Join Game</button>
+    </div>
+    <div style="margin-left:auto">Token: <span id="token" class="meta">-</span></div>
+  </header>
+
+  <div id="boardWrap">
+    <div id="board"></div>
+    <div id="infoPanel">
+      <div><strong>Turn:</strong> <span id="turn">-</span></div>
+      <div><strong>You:</strong> <span id="you">-</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button id="remove" class="btn">Remove Frog</button>
+        <button id="pass" class="btn">Pass</button>
+        <button id="resign" class="btn">Resign</button>
+      </div>
+      <h4 style="margin-top:12px">Action Log</h4>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    function log(msg){ const now=new Date().toLocaleTimeString(); logEl.innerHTML += `<div>[${now}] ${msg}</div>`; logEl.scrollTop=logEl.scrollHeight; }
+
+    const connection = new signalR.HubConnectionBuilder().withUrl('/gamehub').build();
+
+    let myToken=null, myGameId=null, boardState=null, mySide=null;
+    let selected=null, destinations=[];
+
+    connection.on('GameCreated',(gameId,token)=>{
+      document.getElementById('gameId').value=gameId; myToken=token; myGameId=gameId; document.getElementById('token').innerText=token; document.getElementById('you').innerText='Creator'; log(`Game created ${gameId} token=${token}`);
+    });
+
+    connection.on('JoinFailed',(reason)=>{ log(`Join failed: ${reason}`); alert('Join failed: '+reason); });
+
+    connection.on('JoinedGame',(token)=>{ myToken=token; myGameId=document.getElementById('gameId').value; document.getElementById('token').innerText=token; document.getElementById('you').innerText='Joined'; log(`Joined game token=${token}`); });
+
+    connection.on('GameStarted',(payload)=>{
+      boardState=payload.board; renderBoard(boardState); setTurn(payload.currentTurn); log('GameStarted');
+      if(payload.player1 && payload.player2){ if(myToken===payload.player1) mySide=1; else if(myToken===payload.player2) mySide=2; }
+      updateUIState();
+    });
+
+    connection.on('FrogRemoved',(r,c,by)=>{ log(`Frog removed ${r},${c} by ${short(by)}`); boardState && renderBoard(boardState); });
+    connection.on('MoveMade',(payload)=>{ log(`MoveMade by ${short(payload.madeBy)}`); boardState=payload.board; renderBoard(boardState); });
+    connection.on('TurnChanged',(token)=>{ setTurn(token); log(`TurnChanged to ${short(token)}`); updateUIState(); });
+    connection.on('PlayerDisconnected',(id)=>{ log(`PlayerDisconnected ${short(id)}`); });
+    connection.on('PlayerReconnected',(id)=>{ log(`PlayerReconnected ${short(id)}`); });
+    connection.on('GameOver',(winner,reason)=>{ log(`GameOver winner=${short(winner)} reason=${reason}`); alert('Game over: '+short(winner)+' '+reason); });
+
+    function short(token){ if(!token) return '-'; if(token===myToken) return 'You'; return token.substring(0,6); }
+    function setTurn(token){ const turnEl=document.getElementById('turn'); if(token===myToken) turnEl.innerText='You'; else turnEl.innerText=short(token); }
+
+    async function start(){ await connection.start(); log('Connected to hub'); }
+    start();
+
+    document.getElementById('create').onclick = async ()=>{ await connection.invoke('CreateGame'); log('CreateGame invoked'); };
+    document.getElementById('join').onclick = async ()=>{ const id=document.getElementById('gameId').value; if(!id) return alert('enter id'); await connection.invoke('JoinGame', id); log('JoinGame invoked '+id); };
+
+    document.getElementById('remove').onclick = async ()=>{ if(!myGameId) return alert('not in game'); const input=prompt('Row,col to remove (e.g. 2,3)'); if(!input) return; const parts=input.split(',').map(x=>parseInt(x.trim())); await connection.invoke('RemoveFrog', myGameId, parts[0], parts[1]); log(`RemoveFrog invoked ${parts[0]},${parts[1]}`); };
+    document.getElementById('pass').onclick = async ()=>{ if(!myGameId) return alert('not in game'); await connection.invoke('PassTurn', myGameId); log('PassTurn invoked'); };
+
+    function getCell(board,r,c){ if(!board) return 0; if(board.cells) return board.cells[r][c]; return board.Cells[r][c]; }
+
+    function inBounds(r,c){ return r>=0 && r<8 && c>=0 && c<8; }
+
+    function getLegalJumps(board,r,c){ const res=[]; for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){ if(dr===0 && dc===0) continue; const mr=r+dr, mc=c+dc; const tr=r+2*dr, tc=c+2*dc; if(!inBounds(mr,mc) || !inBounds(tr,tc)) continue; if(getCell(board,mr,mc)===0) continue; if(getCell(board,tr,tc)!==0) continue; res.push({r:tr,c:tc}); } return res; }
+
+    function renderBoard(board){ const boardEl=document.getElementById('board'); boardEl.innerHTML=''; for(let r=0;r<8;r++){ for(let c=0;c<8;c++){ const cell=document.createElement('div'); cell.className='cell '+((r>=1&&r<=6&&c>=1&&c<=6)?'white':'green'); cell.dataset.r=r; cell.dataset.c=c; const st=getCell(board,r,c); if(st===1){ cell.innerText='🐸'; cell.classList.add('frog1'); } else if(st===2){ cell.innerText='🐸'; cell.classList.add('frog2'); } cell.onclick=onCellClick; boardEl.appendChild(cell); } } updateHighlights(); }
+
+    function updateHighlights(){ document.querySelectorAll('.cell').forEach(el=>el.classList.remove('selected','dest')); if(!selected) return; // highlight selected and legal destinations
+      const selKey = `${selected.r},${selected.c}`; const cells = document.querySelectorAll('.cell'); cells.forEach(el=>{ if(el.dataset.r==selected.r && el.dataset.c==selected.c) el.classList.add('selected'); }); const legal = getLegalJumps(boardState,selected.r,selected.c); legal.forEach(d=>{ const q=document.querySelector(`.cell[data-r='${d.r}'][data-c='${d.c}']`); if(q) q.classList.add('dest'); }); }
+
+    function onCellClick(e){ const r=parseInt(e.currentTarget.dataset.r), c=parseInt(e.currentTarget.dataset.c); log(`Cell clicked ${r},${c}`); const st=getCell(boardState,r,c); if(!selected){ // attempt select
+        if(!mySide){ log('Waiting for side assignment'); return; }
+        const isOwn = (st===1 && mySide===1) || (st===2 && mySide===2);
+        const turnIsMe = (document.getElementById('turn').innerText==='You');
+        if(!turnIsMe){ log('Not your turn'); return; }
+        if(!isOwn){ log('Not your frog'); return; }
+        selected={r,c}; destinations=[]; updateHighlights(); return;
+    }
+    // if already selected, clicking on a destination cell tries to add it and send immediately
+    const legal = getLegalJumps(boardState,selected.r,selected.c);
+    const clickedIsLegal = legal.some(d=>d.r===r && d.c===c);
+    if(clickedIsLegal){ // send single jump as array
+      destinations.push({r,c}); // send as chain with single dest
+      (async ()=>{ try{ await connection.invoke('MakeMove', myGameId, selected.r, selected.c, destinations); log(`MakeMove invoked from ${selected.r},${selected.c} to ${JSON.stringify(destinations)}`); } catch(ex){ log('MakeMove error: '+(ex.message||ex)); alert('Move failed: '+(ex.message||ex)); } selected=null; destinations=[]; updateHighlights(); })();
+    } else { // clicking another cell resets selection
+      log('Destination not legal - selection cleared'); selected=null; destinations=[]; updateHighlights(); }
+    }
+  </script>
+</body>
+</html>

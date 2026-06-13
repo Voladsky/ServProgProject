@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="ServProgProject.csproj" />
+  <Project Path="ServProgProject.Tests/ServProgProject.Tests.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
+</Solution>
