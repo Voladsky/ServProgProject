@@ -1,31 +1,32 @@
-﻿namespace ServProgProject.Models
+﻿// Models/Game.cs
+using ServProgProject.Models;
+
+public class Game
 {
-    // Models/Game.cs
-    public class Game
-    {
-        public Guid Id { get; } = Guid.NewGuid();
-        public GameStatus Status { get; set; } = GameStatus.WaitingForPlayers;
+    public Guid Id { get; } = Guid.NewGuid();
+    public GameStatus Status { get; set; } = GameStatus.WaitingForPlayers;
 
-        public string Player1Id { get; set; }   // token
-        public string Player2Id { get; set; }
-        public string Player1Connection { get; set; }
-        public string Player2Connection { get; set; }
+    public string Player1Id { get; set; }
+    public string Player2Id { get; set; }
+    public string Player1Connection { get; set; }
+    public string Player2Connection { get; set; }
 
-        public Board Board { get; set; } = new Board();
-        public string CurrentTurn { get; set; }          // token of player who moves now
-        public string LastJumper { get; set; }           // token of last player who made a jump
-        public int ConsecutivePasses { get; set; } = 0;
+    public Board Board { get; set; } = new Board();
+    public string CurrentTurn { get; set; }
+    public string LastJumper { get; set; }
+    public int ConsecutivePasses { get; set; } = 0;
 
-        public bool Player1Removed { get; set; }         // has Player1 performed mandatory removal?
-        public bool Player2Removed { get; set; }
+    public bool Player1Removed { get; set; }         // выполнил ли обязательное удаление
+    public bool Player2Removed { get; set; }
 
-        // Lightweight version to detect stale concurrent attempts
-        public long Version { get; set; } = 0;
+    // Новые флаги: был ли уже первый ход (прыжок или пас)
+    public bool Player1FirstTurnDone { get; set; } = false;
+    public bool Player2FirstTurnDone { get; set; } = false;
 
-        // Disconnect timeout handling
-        public CancellationTokenSource DisconnectCts { get; set; }
-        public bool IsPlayerDisconnected(string playerId) =>
-            (playerId == Player1Id && Player1Connection == null) ||
-            (playerId == Player2Id && Player2Connection == null);
-    }
+    public long Version { get; set; } = 0;
+    public CancellationTokenSource DisconnectCts { get; set; }
+
+    public bool IsPlayerDisconnected(string playerId) =>
+        (playerId == Player1Id && Player1Connection == null) ||
+        (playerId == Player2Id && Player2Connection == null);
 }

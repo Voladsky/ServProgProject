@@ -51,13 +51,25 @@ namespace ServProgProject.Services
         private Board GenerateRandomBoard()
         {
             var board = new Board();
-            // Deterministic placement for integration tests: fill white cells in order so tests relying on specific
-            // midpoints (e.g., (2,2)) are stable. First 18 for player1, next 18 for player2.
             var whiteCells = Board.AllWhiteCells().ToList();
-            for (int i = 0; i < 18; i++) board.Place(whiteCells[i].r, whiteCells[i].c, true);
-            for (int i = 18; i < 36; i++) board.Place(whiteCells[i].r, whiteCells[i].c, false);
+            // Shuffle the entire list of 36 cells
+            var rng = new Random();
+            for (int i = whiteCells.Count - 1; i > 0; i--)
+            {
+                int j = rng.Next(i + 1);
+                (whiteCells[i], whiteCells[j]) = (whiteCells[j], whiteCells[i]);
+            }
+
+            // First 18 shuffled cells → Player1, next 18 → Player2
+            for (int i = 0; i < 18; i++)
+                board.Place(whiteCells[i].r, whiteCells[i].c, true);
+            for (int i = 18; i < 36; i++)
+                board.Place(whiteCells[i].r, whiteCells[i].c, false);
+
             return board;
         }
+
+        // Services/GameManager.cs (только изменённые методы)
 
         public async Task RemoveFrog(Guid gameId, string playerToken, int row, int col)
         {
@@ -69,16 +81,20 @@ namespace ServProgProject.Services
                 bool isPlayer1 = playerToken == game.Player1Id;
                 bool alreadyRemoved = isPlayer1 ? game.Player1Removed : game.Player2Removed;
                 if (alreadyRemoved) throw new InvalidOperationException("Already removed a frog");
-                // Allow removal even if the specified cell is empty (tests may pick arbitrary coords).
+
+                // Проверка: удаление возможно только на самом первом ходу (до прыжков/паса)
+                bool firstTurnDone = isPlayer1 ? game.Player1FirstTurnDone : game.Player2FirstTurnDone;
+                if (firstTurnDone) throw new InvalidOperationException("You can only remove a frog on your very first turn");
+
                 if (!game.Board.IsEmpty(row, col))
                 {
                     game.Board.Remove(row, col);
                 }
+
                 if (isPlayer1) game.Player1Removed = true;
                 else game.Player2Removed = true;
 
                 await _hubContext.Clients.Group(gameId.ToString()).SendAsync("FrogRemoved", row, col, playerToken);
-
             }
             finally { GetLock(gameId).Release(); }
         }
@@ -87,72 +103,73 @@ namespace ServProgProject.Services
         {
             if (!_games.TryGetValue(gameId, out var game)) throw new KeyNotFoundException("Game not found");
             var sem = GetLock(gameId);
-            // Try to acquire the lock immediately; if another move is in progress treat this as a stale concurrent attempt and no-op
             if (!await sem.WaitAsync(0)) return;
             try
             {
                 if (game.CurrentTurn != playerToken)
-                {
-                    // Caller acquired lock but is not the current turn (stale) — ignore the move
                     return;
-                }
-                bool isPlayer1 = playerToken == game.Player1Id;
-                // Mandatory removal check (per assignment, removal is required before first jump)
-                bool removed = isPlayer1 ? game.Player1Removed : game.Player2Removed;
-                if (!removed) throw new InvalidOperationException("Must remove a frog first");
 
+                bool isPlayer1 = playerToken == game.Player1Id;
+
+                // 1. Starting cell must contain the player's frog
                 if (!game.Board.IsPlayerFrog(startRow, startCol, isPlayer1))
                     throw new InvalidOperationException("Not your frog at start");
 
+                // 2. Work on a clone to validate the whole chain
                 var board = game.Board.Clone();
                 int curR = startRow, curC = startCol;
 
-                foreach (var (dr, dc) in destinations)
+                for (int i = 0; i < destinations.Count; i++)
                 {
-                    // If destination currently occupied in the cloned board, temporarily clear it for validation
-                    var prevState = board.Cells[dr, dc];
-                    bool destOccupied = prevState != CellState.Empty;
-                    if (destOccupied)
-                        board.Remove(dr, dc);
+                    var (toR, toC) = destinations[i];
+                    bool isLastJump = (i == destinations.Count - 1);
 
-                    // Validate jump from (curR,curC) to (dr,dc)
-                    if (!MoveValidator.IsLegalJump(board, curR, curC, dr, dc))
-                    {
-                        // restore destination state before failing
-                        if (destOccupied) board.Cells[dr, dc] = prevState;
+                    // Basic geometry and occupancy check
+                    if (!MoveValidator.IsLegalJump(board, curR, curC, toR, toC))
                         throw new InvalidOperationException("Illegal jump");
-                    }
 
-                    int mr = curR + (dr - curR) / 2, mc = curC + (dc - curC) / 2;
-                    board.Remove(mr, mc);
+                    // Apply the jump on the clone
+                    int midR = curR + (toR - curR) / 2;
+                    int midC = curC + (toC - curC) / 2;
+                    board.Remove(midR, midC);
                     board.Remove(curR, curC);
-                    board.Place(dr, dc, isPlayer1);
-                    curR = dr; curC = dc;
+                    board.Place(toR, toC, isPlayer1);
+
+                    // If landing on a swamp square, it must NOT be the last jump
+                    if (BoardConstants.IsSwamp(toR, toC) && isLastJump)
+                        throw new InvalidOperationException("Cannot end a turn on a swamp square");
+
+                    curR = toR;
+                    curC = toC;
                 }
 
-                // Apply cloned board as the authoritative board after successful validation
+                // Final landing must be a white square (already enforced by the loop, but double-check)
+                if (BoardConstants.IsSwamp(curR, curC))
+                    throw new InvalidOperationException("Move ended on swamp – illegal");
+
+                // If we reach here, the whole chain is valid. Apply the changes to the real board.
                 game.Board = board;
 
-                bool endedInSwamp = BoardConstants.IsSwamp(curR, curC);
-                if (endedInSwamp)
-                {
-                    // If frog ends turn in swamp (no immediate legal jump available), remove it from the board
-                    var possible = MoveValidator.GetLegalJumps(game.Board, curR, curC).Count > 0;
-                    if (!possible) game.Board.Remove(curR, curC);
-                }
+                // Mark first turn as done
+                if (isPlayer1) game.Player1FirstTurnDone = true;
+                else game.Player2FirstTurnDone = true;
 
-                // A jump was made (even if frog died in swamp)
                 game.LastJumper = playerToken;
                 game.ConsecutivePasses = 0;
-                // advance version so other concurrent callers can detect staleness
                 game.Version++;
-
-                // Switch turn
                 game.CurrentTurn = isPlayer1 ? game.Player2Id : game.Player1Id;
+
                 await _hubContext.Clients.Group(gameId.ToString()).SendAsync("MoveMade",
                     new { board = game.Board, madeBy = playerToken });
                 await _hubContext.Clients.Group(gameId.ToString()).SendAsync("TurnChanged", game.CurrentTurn);
 
+                // Optional: check game over after move
+                if (!MoveValidator.HasAnyLegalJump(game.Board, true) && !MoveValidator.HasAnyLegalJump(game.Board, false))
+                {
+                    game.Status = GameStatus.Finished;
+                    string winner = game.LastJumper ?? playerToken;
+                    await _hubContext.Clients.Group(gameId.ToString()).SendAsync("GameOver", winner, "No moves left");
+                }
             }
             finally { GetLock(gameId).Release(); }
         }
@@ -165,23 +182,25 @@ namespace ServProgProject.Services
             {
                 if (game.CurrentTurn != playerToken) throw new InvalidOperationException("Not your turn");
                 bool isPlayer1 = playerToken == game.Player1Id;
-                bool removed = isPlayer1 ? game.Player1Removed : game.Player2Removed;
-                if (!removed) throw new InvalidOperationException("Must remove a frog first");
 
-                // Verify no legal jump exists for that player
+                // Убираем проверку удаления
+
                 if (MoveValidator.HasAnyLegalJump(game.Board, isPlayer1))
                     throw new InvalidOperationException("You have legal jumps; cannot pass");
+
+                // Первый ход совершён (пас)
+                if (isPlayer1) game.Player1FirstTurnDone = true;
+                else game.Player2FirstTurnDone = true;
 
                 game.ConsecutivePasses++;
                 if (game.ConsecutivePasses >= 2)
                 {
                     game.Status = GameStatus.Finished;
-                    string winner = game.LastJumper ?? playerToken; // fallback if no jumps ever (unlikely)
+                    string winner = game.LastJumper ?? playerToken;
                     await _hubContext.Clients.Group(gameId.ToString()).SendAsync("GameOver", winner, "No moves possible");
                     return;
                 }
 
-                // Switch turn
                 game.CurrentTurn = isPlayer1 ? game.Player2Id : game.Player1Id;
                 await _hubContext.Clients.Group(gameId.ToString()).SendAsync("TurnChanged", game.CurrentTurn);
             }

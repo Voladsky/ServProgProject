@@ -1,10 +1,11 @@
 ﻿using Microsoft.AspNetCore.SignalR;
+using ServProgProject.Models;
 using ServProgProject.Services;
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System;
-using System.Collections.Generic;
-using System.Collections.Concurrent;
 
 namespace ServProgProject.Hubs
 {
@@ -85,10 +86,14 @@ namespace ServProgProject.Hubs
             await _manager.RemoveFrog(gameId, token, row, col);
         }
 
-        public async Task MakeMove(Guid gameId, int startRow, int startCol, List<(int r, int c)> destinations)
+        public async Task MakeMove(Guid gameId, int startRow, int startCol, List<MoveStep> destinations)
         {
-            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token)) throw new InvalidOperationException("Not authenticated in this game");
-            await _manager.MakeMove(gameId, token, startRow, startCol, destinations);
+            if (!_connToToken.TryGetValue(Context.ConnectionId, out var token))
+                throw new InvalidOperationException("Not authenticated in this game");
+
+            // Convert to tuple list expected by GameManager
+            var tuples = destinations.Select(d => (d.Row, d.Col)).ToList();
+            await _manager.MakeMove(gameId, token, startRow, startCol, tuples);
         }
 
         public async Task PassTurn(Guid gameId)
