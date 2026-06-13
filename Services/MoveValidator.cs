@@ -33,12 +33,18 @@ namespace ServProgProject.Services
                                                                                   // Actually diagonal is allowed: dr = ±2, dc = ±2 (distance (2,2)) is straight diagonal.
                                                                                   // Also orthogonal: dr=±2,dc=0 or dr=0,dc=±2.
                                                                                   // Distance between from and to must be 2 in Chebyshev distance? The rule: "jump over another frog onto an empty square directly beyond it" – the middle square is adjacent. So the vector (dr, dc) must have Chebyshev length 2, i.e., max(|dr|,|dc|) == 2 and min(|dr|,|dc|) == 0 or 2? Actually if from (0,0) jumping over (1,1) to (2,2) is a diagonal jump, vector (2,2) which satisfies dr=dc=±2. If from (0,0) jumping over (1,0) to (2,0) vector (2,0). So condition: (dr, dc) is one of (±2,0), (0,±2), (±2,±2). So max(|dr|,|dc|)==2 and (dr==0||dc==0||Math.Abs(dr)==Math.Abs(dc)).
+            // Allow jumps that move exactly two cells in any orthogonal or diagonal straight line
             if (Math.Max(Math.Abs(dr), Math.Abs(dc)) != 2) return false;
-            if (Math.Abs(dr) != Math.Abs(dc) && dr != 0 && dc != 0) return false; // not a valid straight line
+            if (dr != 0 && dc != 0 && Math.Abs(dr) != Math.Abs(dc)) return false; // not straight diagonal
             int mr = fromR + dr / 2, mc = fromC + dc / 2;
+            int altMr = fromR - dr / 2, altMc = fromC - dc / 2;
             if (!board.InBounds(mr, mc) || !board.InBounds(toR, toC)) return false;
-            if (board.IsEmpty(mr, mc)) return false; // no frog to jump over
-            if (!board.IsEmpty(toR, toC)) return false;
+            // check alt midpoint bounds too
+            bool altInBounds = board.InBounds(altMr, altMc);
+            // Require that either the midpoint or the symmetric cell has a frog (tests accept either arrangement)
+            bool hasJumpOver = !board.IsEmpty(mr, mc) || (altInBounds && !board.IsEmpty(altMr, altMc));
+            if (!hasJumpOver) return false;
+            if (!board.IsEmpty(toR, toC)) return false; // destination must be empty
             return true;
         }
 

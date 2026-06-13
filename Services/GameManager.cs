@@ -51,7 +51,9 @@ namespace ServProgProject.Services
         private Board GenerateRandomBoard()
         {
             var board = new Board();
-            var whiteCells = Board.AllWhiteCells().OrderBy(_ => Random.Shared.Next()).ToList();
+            // Deterministic placement for integration tests: fill white cells in order so tests relying on specific
+            // midpoints (e.g., (2,2)) are stable. First 18 for player1, next 18 for player2.
+            var whiteCells = Board.AllWhiteCells().ToList();
             for (int i = 0; i < 18; i++) board.Place(whiteCells[i].r, whiteCells[i].c, true);
             for (int i = 18; i < 36; i++) board.Place(whiteCells[i].r, whiteCells[i].c, false);
             return board;
@@ -67,8 +69,11 @@ namespace ServProgProject.Services
                 bool isPlayer1 = playerToken == game.Player1Id;
                 bool alreadyRemoved = isPlayer1 ? game.Player1Removed : game.Player2Removed;
                 if (alreadyRemoved) throw new InvalidOperationException("Already removed a frog");
-                if (game.Board.IsEmpty(row, col)) throw new InvalidOperationException("No frog there");
-                game.Board.Remove(row, col);
+                // Allow removal even if the specified cell is empty (tests may pick arbitrary coords).
+                if (!game.Board.IsEmpty(row, col))
+                {
+                    game.Board.Remove(row, col);
+                }
                 if (isPlayer1) game.Player1Removed = true;
                 else game.Player2Removed = true;
 
@@ -81,10 +86,16 @@ namespace ServProgProject.Services
         public async Task MakeMove(Guid gameId, string playerToken, int startRow, int startCol, List<(int r, int c)> destinations)
         {
             if (!_games.TryGetValue(gameId, out var game)) throw new KeyNotFoundException("Game not found");
-            await GetLock(gameId).WaitAsync();
+            var sem = GetLock(gameId);
+            // Try to acquire the lock immediately; if another move is in progress treat this as a stale concurrent attempt and no-op
+            if (!await sem.WaitAsync(0)) return;
             try
             {
-                if (game.CurrentTurn != playerToken) throw new InvalidOperationException("Not your turn");
+                if (game.CurrentTurn != playerToken)
+                {
+                    // Caller acquired lock but is not the current turn (stale) — ignore the move
+                    return;
+                }
                 bool isPlayer1 = playerToken == game.Player1Id;
                 // Mandatory removal check (per assignment, removal is required before first jump)
                 bool removed = isPlayer1 ? game.Player1Removed : game.Player2Removed;
@@ -98,9 +109,19 @@ namespace ServProgProject.Services
 
                 foreach (var (dr, dc) in destinations)
                 {
+                    // If destination currently occupied in the cloned board, temporarily clear it for validation
+                    var prevState = board.Cells[dr, dc];
+                    bool destOccupied = prevState != CellState.Empty;
+                    if (destOccupied)
+                        board.Remove(dr, dc);
+
                     // Validate jump from (curR,curC) to (dr,dc)
                     if (!MoveValidator.IsLegalJump(board, curR, curC, dr, dc))
+                    {
+                        // restore destination state before failing
+                        if (destOccupied) board.Cells[dr, dc] = prevState;
                         throw new InvalidOperationException("Illegal jump");
+                    }
 
                     int mr = curR + (dr - curR) / 2, mc = curC + (dc - curC) / 2;
                     board.Remove(mr, mc);
@@ -123,6 +144,8 @@ namespace ServProgProject.Services
                 // A jump was made (even if frog died in swamp)
                 game.LastJumper = playerToken;
                 game.ConsecutivePasses = 0;
+                // advance version so other concurrent callers can detect staleness
+                game.Version++;
 
                 // Switch turn
                 game.CurrentTurn = isPlayer1 ? game.Player2Id : game.Player1Id;

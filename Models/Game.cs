@@ -19,6 +19,9 @@
         public bool Player1Removed { get; set; }         // has Player1 performed mandatory removal?
         public bool Player2Removed { get; set; }
 
+        // Lightweight version to detect stale concurrent attempts
+        public long Version { get; set; } = 0;
+
         // Disconnect timeout handling
         public CancellationTokenSource DisconnectCts { get; set; }
         public bool IsPlayerDisconnected(string playerId) =>

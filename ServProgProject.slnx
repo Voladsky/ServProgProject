@@ -1,6 +1,4 @@
 <Solution>
+  <Project Path="../ServProgProject.Tests/ServProgProject.Tests.csproj" Id="c9832517-cddc-450c-9c85-69eeb2cbbc77" />
   <Project Path="ServProgProject.csproj" />
-  <Project Path="ServProgProject.Tests/ServProgProject.Tests.csproj">
-    <Build Solution="Debug|*" Project="false" />
-  </Project>
 </Solution>

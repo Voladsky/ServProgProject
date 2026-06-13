@@ -1,9 +1,38 @@
-﻿namespace ServProgProject.Models
+﻿using System;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+
+namespace ServProgProject.Models
 {
     // Models/Board.cs
     public class Board
     {
+        // Keep a 2D array for internal use and tests, but ignore it for JSON serialization
+        [JsonIgnore]
         public CellState[,] Cells { get; private set; } = new CellState[8, 8];
+
+        // Provide a jagged-array view that will be serialized as 'cells' for clients
+        [JsonPropertyName("cells")]
+        public CellState[][] CellsForJson
+        {
+            get
+            {
+                var arr = new CellState[8][];
+                for (int r = 0; r < 8; r++)
+                {
+                    arr[r] = new CellState[8];
+                    for (int c = 0; c < 8; c++) arr[r][c] = Cells[r, c];
+                }
+                return arr;
+            }
+            set
+            {
+                if (value == null) return;
+                for (int r = 0; r < Math.Min(8, value.Length); r++)
+                    for (int c = 0; c < Math.Min(8, value[r].Length); c++)
+                        Cells[r, c] = value[r][c];
+            }
+        }
 
         public Board() { }
 
